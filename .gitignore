@@ -1,0 +1,7 @@
+backend/.env
+__pycache__/
+frontend/node_modules/
+frontend/node_modules_failed_*/
+frontend/node_modules_incomplete_*/
+frontend/node_modules_pnpm_retry_*/
+.history/
