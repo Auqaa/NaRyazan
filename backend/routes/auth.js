@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const auth = require('../middleware/auth');
+const { normalizeUserRole } = require('../services/roles');
 const { withDb, getDb } = require('../storage/fileDb');
 
 const makeId = () => crypto.randomUUID();
@@ -21,6 +22,7 @@ const signAuthToken = (userId) => {
 
 const withVerificationState = (user) => ({
   ...user,
+  role: normalizeUserRole(user.role),
   favoriteRoutes: user.favoriteRoutes || [],
   verification: {
     email: {
@@ -93,7 +95,7 @@ router.post(
         email,
         phone,
         password: hashedPassword,
-        role: 'User',
+        role: normalizeUserRole('User'),
         balance: 0,
         completedRoutes: [],
         scannedPoints: [],

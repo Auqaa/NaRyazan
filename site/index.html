@@ -13,6 +13,8 @@
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://mapgl.2gis.com/api/js/v1"></script>
+    <script src="/vendor/zxing-browser.min.js"></script>
+    <script src="/scripts/qrScanner.js"></script>
     <style>
       :root {
         --glass-bg: rgba(255, 255, 255, 0.52);
@@ -142,6 +144,7 @@
         <nav class="text-sm flex flex-wrap gap-x-4 gap-y-1 items-center justify-end text-slate-600">
           <a class="hover:text-slate-900 transition-colors no-underline" href="#/">Главная</a>
           <button type="button" class="hover:text-slate-900 transition-colors bg-transparent border-0 cursor-pointer p-0 font-inherit text-sm text-slate-600" data-wip="Подбор рядом">Рядом</button>
+          <a class="hover:text-slate-900 transition-colors no-underline hidden" href="#/guide" id="navGuide">Кабинет экскурсовода</a>
           <a class="hover:text-slate-900 transition-colors no-underline" href="#/profile">Профиль</a>
           <a class="hover:text-slate-900 transition-colors no-underline" href="#/login" id="navLogin">Вход</a>
           <button type="button" class="hover:text-slate-900 transition-colors hidden bg-transparent border-0 cursor-pointer p-0 font-inherit text-sm text-slate-600" id="navLogout">Выход</button>
@@ -165,10 +168,10 @@
           <span class="text-base leading-none opacity-80">♡</span>
           <span>Избранное</span>
         </button>
-        <button type="button" data-wip="Голосовой гид" class="flex flex-col items-center gap-0.5 text-[11px] text-slate-600 min-w-[3.5rem] py-1 rounded-pill hover:bg-white/40 transition-colors bg-transparent border-0 cursor-pointer font-inherit">
+        <a href="#/guide" id="mobileGuideNav" class="hidden flex flex-col items-center gap-0.5 text-[11px] text-slate-600 no-underline min-w-[3.5rem] py-1 rounded-pill hover:bg-white/40 transition-colors">
           <span class="text-base leading-none opacity-80">◉</span>
           <span>Гид</span>
-        </button>
+        </a>
         <a href="#/profile" class="flex flex-col items-center gap-0.5 text-[11px] text-slate-600 no-underline min-w-[3.5rem] py-1 rounded-pill hover:bg-white/40 transition-colors">
           <span class="text-base leading-none opacity-80">◐</span>
           <span>Профиль</span>
@@ -221,7 +224,111 @@
         userMarker: null,
         watchId: null,
         routeStats: { meters: 0, seconds: 0, source: '' },
-        placedStops: []
+        placedStops: [],
+        qr: {
+          scanner: null,
+          cameraMode: 'environment',
+          cameraOpen: false,
+          cameraStarting: false,
+          uploadBusy: false,
+          submitting: false,
+          syncing: false,
+          status: '',
+          error: '',
+          render: null
+        },
+        guide: {
+          packs: [],
+          details: {},
+          selectedPackId: '',
+          selectedVariantRouteId: '',
+          loadingList: false,
+          loadingDetail: false,
+          error: '',
+          map: null,
+          markers: [],
+          polyline: null
+        }
+      };
+
+      const legacyScanQueueKey = 'offline_scan_queue';
+      const scanQueueKey = 'offline_scan_queue_v2';
+      let scanQueueSyncPromise = null;
+
+      const parseStoredJson = (value, fallback) => {
+        try { return JSON.parse(value); } catch (e) { return fallback; }
+      };
+
+      const normalizeClientQrValue = (value) => String(value || '').trim().replace(/\s+/g, '').toLowerCase();
+
+      const migrateLegacyScanQueue = () => {
+        const legacy = parseStoredJson(localStorage.getItem(legacyScanQueueKey) || '[]', []);
+        if (!Array.isArray(legacy) || !legacy.length) return [];
+        const migrated = legacy.map((item) => ({
+          id: item.id || crypto.randomUUID(),
+          qrValue: String(item.qrValue || ''),
+          normalizedQrValue: normalizeClientQrValue(item.qrValue),
+          source: item.source || 'legacy-manual',
+          createdAt: item.ts || Date.now()
+        }));
+        localStorage.removeItem(legacyScanQueueKey);
+        return migrated;
+      };
+
+      const dedupeQueuedScans = (items) => {
+        const seen = new Set();
+        return (Array.isArray(items) ? items : []).filter((item) => {
+          const normalizedQrValue = normalizeClientQrValue(item.normalizedQrValue || item.qrValue);
+          if (!normalizedQrValue || seen.has(normalizedQrValue)) return false;
+          seen.add(normalizedQrValue);
+          item.normalizedQrValue = normalizedQrValue;
+          return true;
+        });
+      };
+
+      const readQueuedScans = () => {
+        const current = parseStoredJson(localStorage.getItem(scanQueueKey) || '[]', []);
+        if (Array.isArray(current) && current.length) return dedupeQueuedScans(current);
+        const migrated = migrateLegacyScanQueue();
+        if (migrated.length) {
+          localStorage.setItem(scanQueueKey, JSON.stringify(dedupeQueuedScans(migrated)));
+        }
+        return dedupeQueuedScans(migrated);
+      };
+
+      const writeQueuedScans = (items) => {
+        const normalized = dedupeQueuedScans(items);
+        localStorage.setItem(scanQueueKey, JSON.stringify(normalized));
+        return normalized;
+      };
+
+      const getQueuedScanCount = () => readQueuedScans().length;
+
+      const enqueueScan = (qrValue, source) => {
+        const normalizedQrValue = normalizeClientQrValue(qrValue);
+        if (!normalizedQrValue) return { added: false, duplicate: false, count: getQueuedScanCount() };
+
+        const queue = readQueuedScans();
+        if (queue.some((item) => item.normalizedQrValue === normalizedQrValue)) {
+          return { added: false, duplicate: true, count: queue.length };
+        }
+
+        const nextQueue = writeQueuedScans([
+          ...queue,
+          {
+            id: crypto.randomUUID(),
+            qrValue: String(qrValue || '').trim(),
+            normalizedQrValue,
+            source: source || 'manual',
+            createdAt: Date.now()
+          }
+        ]);
+
+        return { added: true, duplicate: false, count: nextQueue.length };
+      };
+
+      const removeQueuedScan = (id) => {
+        writeQueuedScans(readQueuedScans().filter((item) => item.id !== id));
       };
 
       const el = (html) => {
@@ -229,6 +336,16 @@
         t.innerHTML = html.trim();
         return t.content.firstElementChild;
       };
+
+      const escapeHtml = (value) =>
+        String(value ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+
+      const hasGuideWorkspaceAccess = (user = state.user) => ['Guide', 'Curator', 'Administrator'].includes(String(user?.role || ''));
 
       const toast = (msg, type='info') => {
         let cls = 'text-slate-800 bg-white/82';
@@ -238,6 +355,27 @@
         document.body.appendChild(box);
         setTimeout(() => box.remove(), 2800);
       };
+
+      function triggerQrRender() {
+        if (typeof state.qr.render === 'function') state.qr.render();
+      }
+
+      async function stopActiveScanner(options = {}) {
+        const { preserveStatus = false } = options;
+        const scanner = state.qr.scanner;
+        if (scanner && typeof scanner.stop === 'function') {
+          try {
+            await scanner.stop();
+          } catch (error) {
+            console.warn('Failed to stop active scanner', error);
+          }
+        }
+
+        state.qr.cameraOpen = false;
+        state.qr.cameraStarting = false;
+        if (!preserveStatus) state.qr.error = '';
+        triggerQrRender();
+      }
 
       function showWip(name) {
         const label = name || 'Этот раздел';
@@ -281,6 +419,8 @@
       const setNavAuth = () => {
         const login = document.getElementById('navLogin');
         const logout = document.getElementById('navLogout');
+        const guideLink = document.getElementById('navGuide');
+        const mobileGuideLink = document.getElementById('mobileGuideNav');
         if (localStorage.getItem('token')) {
           login.classList.add('hidden');
           logout.classList.remove('hidden');
@@ -288,11 +428,18 @@
           login.classList.remove('hidden');
           logout.classList.add('hidden');
         }
+
+        const guideVisible = Boolean(localStorage.getItem('token')) && hasGuideWorkspaceAccess();
+        guideLink.classList.toggle('hidden', !guideVisible);
+        mobileGuideLink.classList.toggle('hidden', !guideVisible);
       };
 
       document.getElementById('navLogout').addEventListener('click', () => {
         localStorage.removeItem('token');
         state.user = null;
+        state.guide.selectedPackId = '';
+        state.guide.selectedVariantRouteId = '';
+        destroyGuideMap();
         setNavAuth();
         location.hash = '#/login';
         toast('Вы вышли', 'success');
@@ -334,6 +481,135 @@
         return (state.user?.scannedPoints || []).map(p => p._id);
       }
 
+      function findRouteByPoint(point) {
+        if (!point) return null;
+        return (
+          state.routes.find((route) => route._id === point.routeId) ||
+          state.routes.find((route) => (route.points || []).some((item) => item._id === point._id)) ||
+          null
+        );
+      }
+
+      function getNextRoutePoint(route) {
+        if (!route) return null;
+        const scannedIds = new Set(getScannedPointIds());
+        return sortedRoutePoints(route).find((point) => !scannedIds.has(point._id)) || null;
+      }
+
+      async function refreshAfterScanStateChange() {
+        await fetchUser();
+        if (state.map) {
+          drawMarkers();
+          await updatePedestrianRoute();
+        }
+        if (typeof window.__refreshHome === 'function') window.__refreshHome();
+      }
+
+      async function applyScanResponse(res, options = {}) {
+        const point = res.point;
+        const route = findRouteByPoint(point);
+        const switchedRoute = Boolean(
+          route &&
+          options.allowRouteSwitch !== false &&
+          (!state.selectedRoute || state.selectedRoute._id !== route._id)
+        );
+
+        if (switchedRoute) {
+          state.selectedRoute = route;
+          state.placedStops = [];
+        }
+
+        await refreshAfterScanStateChange();
+
+        if (res.scanStatus === 'fresh') {
+          const rewardDelta = res.rewardDelta ?? res.reward ?? 0;
+          toast('Точка засчитана, +' + rewardDelta, 'success');
+        } else {
+          toast('Эта точка уже была засчитана', 'info');
+        }
+
+        if (switchedRoute && route) {
+          toast('Переключили маршрут: ' + route.name, 'success');
+        }
+
+        if (Array.isArray(res.newlyCompletedRoutes) && res.newlyCompletedRoutes.length) {
+          toast(
+            'Маршрут завершён: ' + res.newlyCompletedRoutes.map((item) => item.name).join(', '),
+            'success'
+          );
+        }
+
+        state.qr.status = res.scanStatus === 'fresh'
+          ? 'Новая точка принята.'
+          : 'Повторный скан принят без дополнительных баллов.';
+        state.qr.error = '';
+        triggerQrRender();
+
+        if (point && options.openGuide !== false) {
+          openGuideForPoint(point, res.scanStatus === 'fresh');
+        }
+
+        return { point, route, switchedRoute };
+      }
+
+      async function syncQueuedScans(options = {}) {
+        if (scanQueueSyncPromise) return scanQueueSyncPromise;
+
+        scanQueueSyncPromise = (async () => {
+          const queue = readQueuedScans();
+          if (!navigator.onLine || !queue.length || !localStorage.getItem('token')) {
+            triggerQrRender();
+            return { fresh: 0, duplicate: 0, failed: 0, remaining: queue.length };
+          }
+
+          state.qr.syncing = true;
+          state.qr.status = 'Синхронизируем сохранённые QR-коды...';
+          state.qr.error = '';
+          triggerQrRender();
+
+          const summary = { fresh: 0, duplicate: 0, failed: 0 };
+
+          for (const item of readQueuedScans()) {
+            try {
+              const res = await api.post('/api/scan', {
+                qrValue: item.qrValue,
+                source: item.source || 'offline-queue'
+              });
+              removeQueuedScan(item.id);
+              if (res.scanStatus === 'fresh') summary.fresh += 1;
+              else summary.duplicate += 1;
+            } catch (error) {
+              summary.failed += 1;
+            }
+          }
+
+          if (summary.fresh || summary.duplicate) {
+            await refreshAfterScanStateChange();
+          }
+
+          if (!options.silent) {
+            if (summary.fresh) {
+              toast('Синхронизировано новых точек: ' + summary.fresh, 'success');
+            } else if (summary.duplicate) {
+              toast('Офлайн-очередь синхронизирована без дополнительных баллов', 'info');
+            }
+          }
+
+          state.qr.status = getQueuedScanCount()
+            ? 'Остались сохранённые сканы, повторим позже.'
+            : 'Офлайн-очередь пуста.';
+          return { ...summary, remaining: getQueuedScanCount() };
+        })();
+
+        try {
+          return await scanQueueSyncPromise;
+        } finally {
+          state.qr.syncing = false;
+          scanQueueSyncPromise = null;
+          triggerQrRender();
+        }
+      }
+
       function destroyMapGl() {
         if (state.watchId != null) {
           navigator.geolocation.clearWatch(state.watchId);
@@ -347,6 +623,15 @@
         state.userMarker = null;
         if (state.map && state.map.destroy) state.map.destroy();
         state.map = null;
+      }
+
+      function destroyGuideMap() {
+        state.guide.markers.forEach((marker) => { if (marker && marker.destroy) marker.destroy(); });
+        state.guide.markers = [];
+        if (state.guide.polyline && state.guide.polyline.destroy) state.guide.polyline.destroy();
+        state.guide.polyline = null;
+        if (state.guide.map && state.guide.map.destroy) state.guide.map.destroy();
+        state.guide.map = null;
       }
 
       function buildWaypointsFromRoute(route) {
@@ -539,17 +824,52 @@
         dlg.open('Финальный тест маршрута', [box]);
       }
 
-      async function handleScanResult(qr) {
+      async function handleScanResult(qr, options = {}) {
+        const value = String(qr || '').trim();
+        if (!value) {
+          toast('Введите значение QR', 'error');
+          return { queued: false, result: null };
+        }
+
         try {
-          const res = await api.post('/api/scan', { qrValue: qr });
-          await fetchUser();
-          const p = res.point;
-          if (res.freshScan) toast('Точка засчитана, +' + res.reward + ' баллов', 'success');
-          if (p && state.map) { drawMarkers(); updatePedestrianRoute(); }
-          if (typeof window.__refreshHome === 'function') window.__refreshHome();
-          if (p) openGuideForPoint(p, true);
+          state.qr.submitting = true;
+          state.qr.error = '';
+          state.qr.status = navigator.onLine
+            ? 'Проверяем QR-код...'
+            : 'Сохраняем QR-код в офлайн-очередь...';
+          triggerQrRender();
+
+          if (!navigator.onLine) {
+            const queued = enqueueScan(value, options.source || 'manual');
+            if (queued.duplicate) {
+              toast('Этот QR уже ждёт синхронизации', 'info');
+            } else {
+              toast('Сохранено офлайн. Синхронизируем позже.', 'success');
+            }
+            state.qr.submitting = false;
+            state.qr.status = queued.count ? 'В офлайн-очереди: ' + queued.count : 'Офлайн-очередь пуста.';
+            triggerQrRender();
+            return { queued: true, result: null };
+          }
+
+          const res = await api.post('/api/scan', {
+            qrValue: value,
+            source: options.source || 'manual'
+          });
+          await applyScanResponse(res, {
+            allowRouteSwitch: options.allowRouteSwitch,
+            openGuide: options.openGuide
+          });
+          state.qr.submitting = false;
+          triggerQrRender();
+          return { queued: false, result: res };
         } catch (e) {
-          toast(e.msg || 'Ошибка сканирования', 'error');
+          state.qr.submitting = false;
+          state.qr.error = e.msg || 'Не удалось обработать QR-код';
+          state.qr.status = '';
+          triggerQrRender();
+          toast(e.msg || 'Сканирование не удалось', 'error');
+          return { queued: false, result: null };
         }
       }
 
@@ -741,11 +1061,39 @@
 
         const scanCard = el(`
           <div class="glass-panel rounded-card p-5 md:p-6">
-            <div class="flex items-center justify-between gap-3">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
               <h2 class="hero-title text-lg text-slate-800">Скан точки</h2>
-              <span class="text-[11px] font-medium px-3 py-1.5 rounded-pill glass-panel ${navigator.onLine ? 'text-emerald-800' : 'text-amber-900'}">${navigator.onLine ? 'онлайн' : 'офлайн'}</span>
+              <div class="flex flex-wrap items-center gap-2">
+                <span id="qrConnectivityBadge" class="text-[11px] font-medium px-3 py-1.5 rounded-pill glass-panel ${navigator.onLine ? 'text-emerald-800' : 'text-amber-900'}">${navigator.onLine ? 'онлайн' : 'офлайн'}</span>
+                <span id="qrQueueBadge" class="text-[11px] font-medium px-3 py-1.5 rounded-pill glass-panel text-slate-700">очередь пуста</span>
+              </div>
             </div>
-            <p class="text-sm text-slate-500 mt-3 font-light leading-relaxed">Введите код с таблички (как при сканировании QR).</p>
+            <p class="text-sm text-slate-500 mt-3 font-light leading-relaxed">Камера, фото и ручной ввод теперь работают через единый поток сканирования.</p>
+            <div class="mt-4 glass-panel rounded-card p-4 space-y-2">
+              <div id="qrStatusText" class="text-sm text-slate-600 font-light">Откройте камеру, загрузите фото или введите код вручную.</div>
+              <div id="qrNextHint" class="text-xs text-slate-500 leading-relaxed"></div>
+            </div>
+            <div class="mt-4 flex flex-col gap-3 sm:flex-row">
+              <button type="button" id="qrOpenCamera" class="btn-primary flex-1 text-sm !py-3.5">Открыть камеру</button>
+              <button type="button" id="qrSwitchCamera" class="btn-ghost text-sm !py-3.5 hidden">Фронтальная камера</button>
+              <label class="btn-ghost flex-1 text-sm !py-3.5 cursor-pointer text-center">
+                <span id="qrFileLabel">Сканировать по фото</span>
+                <input id="qrFileInput" type="file" accept="image/*" capture="environment" class="hidden" />
+              </label>
+            </div>
+            <div id="qrCameraAlert" class="hidden mt-4 rounded-card bg-amber-50/90 border border-amber-100 px-4 py-3 text-sm text-amber-900"></div>
+            <div id="qrCameraPanel" class="hidden mt-4 glass-panel rounded-card p-3 space-y-3">
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <div class="text-sm font-medium text-slate-800">Сканирование камерой</div>
+                  <div class="text-xs text-slate-500 font-light">Наведите камеру на QR-код и удерживайте пару секунд.</div>
+                </div>
+                <button type="button" id="qrCloseCamera" class="btn-ghost text-xs !py-2 !px-4">Закрыть</button>
+              </div>
+              <div class="overflow-hidden rounded-card bg-slate-950 aspect-[4/5]">
+                <video id="qrVideo" class="w-full h-full object-cover" autoplay muted playsinline></video>
+              </div>
+            </div>
             <div class="mt-5 grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
               <div class="md:col-span-2">
                 <label class="text-[11px] font-medium uppercase tracking-wider text-slate-400">Значение</label>
@@ -755,11 +1103,10 @@
             </div>
             <details class="text-sm mt-4 group">
               <summary class="cursor-pointer text-slate-500 font-medium list-none flex items-center gap-2">
-                <span class="opacity-60">+</span> Подсказка для демо
+                <span class="opacity-60">+</span> Демо-коды
               </summary>
               <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2" id="qrHint"></div>
             </details>
-            <button type="button" class="btn-ghost w-full mt-4 text-sm" data-wip="Камера для скана QR">Открыть камеру (скоро)</button>
           </div>
         `);
         left.appendChild(scanCard);
@@ -770,37 +1117,204 @@
           qh.appendChild(b);
         });
 
-        const scanQueueKey = 'offline_scan_queue';
-        const enqueueScan = (qr) => {
-          const q = JSON.parse(localStorage.getItem(scanQueueKey) || '[]');
-          q.push({ id: crypto.randomUUID(), qrValue: qr, ts: Date.now() });
-          localStorage.setItem(scanQueueKey, JSON.stringify(q));
-        };
-        const dequeueAll = () => JSON.parse(localStorage.getItem(scanQueueKey) || '[]');
-        const removeQueued = (id) => {
-          localStorage.setItem(scanQueueKey, JSON.stringify(dequeueAll().filter(x => x.id !== id)));
-        };
-        const syncQueue = async () => {
-          for (const item of dequeueAll()) {
-            try {
-              const res = await api.post('/api/scan', { qrValue: item.qrValue });
-              removeQueued(item.id);
-              if (res.reward) toast('Синхронизировано: +' + res.reward, 'success');
-            } catch {}
+        const qrInput = scanCard.querySelector('#qrInput');
+        const qrOpenCamera = scanCard.querySelector('#qrOpenCamera');
+        const qrSwitchCamera = scanCard.querySelector('#qrSwitchCamera');
+        const qrCloseCamera = scanCard.querySelector('#qrCloseCamera');
+        const qrFileInput = scanCard.querySelector('#qrFileInput');
+        const qrFileLabel = scanCard.querySelector('#qrFileLabel');
+        const qrConnectivityBadge = scanCard.querySelector('#qrConnectivityBadge');
+        const qrQueueBadge = scanCard.querySelector('#qrQueueBadge');
+        const qrStatusText = scanCard.querySelector('#qrStatusText');
+        const qrNextHint = scanCard.querySelector('#qrNextHint');
+        const qrCameraAlert = scanCard.querySelector('#qrCameraAlert');
+        const qrCameraPanel = scanCard.querySelector('#qrCameraPanel');
+        const qrVideo = scanCard.querySelector('#qrVideo');
+
+        const getQrCapabilities = () =>
+          window.RyazanQrScanner?.getCapabilities?.() || {
+            decoderAvailable: false,
+            secureContext: Boolean(window.isSecureContext),
+            mediaDevices: Boolean(navigator.mediaDevices?.getUserMedia),
+            liveCamera: false
+          };
+
+        const describeCameraIssue = (error) => {
+          const capabilities = getQrCapabilities();
+          const errorName = String(error?.name || '').toLowerCase();
+          const errorMessage = String(error?.message || error || '').toLowerCase();
+
+          if (!capabilities.decoderAvailable) return 'QR-сканер не загрузился. Пока можно использовать фото или ручной ввод.';
+          if (!capabilities.secureContext) return 'Сканирование камерой требует HTTPS или localhost. Пока используйте фото или ручной ввод.';
+          if (!capabilities.mediaDevices) return 'Этот браузер не умеет открывать камеру. Используйте фото или ручной ввод.';
+          if (errorName.includes('notallowed') || errorMessage.includes('permission') || errorMessage.includes('denied')) {
+            return 'Доступ к камере заблокирован. Разрешите его в браузере или используйте фото.';
           }
-          await fetchUser();
-          drawMarkers();
-          updatePedestrianRoute();
-          renderRight();
+          if (errorName.includes('notfound') || errorMessage.includes('not found')) {
+            return 'Камера не найдена. Используйте фото или ручной ввод.';
+          }
+          if (errorName.includes('notreadable') || errorMessage.includes('notreadable')) {
+            return 'Камера занята другим приложением. Закройте его и попробуйте снова.';
+          }
+          if (errorName.includes('overconstrained') || errorMessage.includes('constraint')) {
+            return 'Не удалось запустить выбранную камеру. Попробуйте переключить её.';
+          }
+          return 'Не удалось запустить камеру. Фото и ручной ввод по-прежнему доступны.';
         };
-        window.addEventListener('online', syncQueue);
+
+        const ensureQrScanner = () => {
+          if (!state.qr.scanner && window.RyazanQrScanner?.create) {
+            state.qr.scanner = window.RyazanQrScanner.create(qrVideo);
+          }
+          return state.qr.scanner;
+        };
+
+        const renderScanCardState = () => {
+          const capabilities = getQrCapabilities();
+          const queueCount = getQueuedScanCount();
+          const nextPoint = getNextRoutePoint(state.selectedRoute);
+          const defaultAlert = !capabilities.liveCamera ? describeCameraIssue() : '';
+          const alertText = state.qr.error || defaultAlert;
+
+          qrConnectivityBadge.textContent = navigator.onLine ? 'онлайн' : 'офлайн';
+          qrConnectivityBadge.className = `text-[11px] font-medium px-3 py-1.5 rounded-pill glass-panel ${navigator.onLine ? 'text-emerald-800' : 'text-amber-900'}`;
+          qrQueueBadge.textContent = queueCount ? `в очереди: ${queueCount}` : state.qr.syncing ? 'синхронизация' : 'очередь пуста';
+          qrStatusText.textContent =
+            state.qr.status ||
+            (queueCount
+              ? `В офлайн-очереди сохранено: ${queueCount}.`
+              : 'Откройте камеру, загрузите фото или введите код вручную.');
+
+          if (state.selectedRoute && nextPoint) {
+            qrNextHint.textContent = `Следующая точка маршрута "${state.selectedRoute.name}": ${nextPoint.name}.`;
+          } else if (state.selectedRoute) {
+            qrNextHint.textContent = `Маршрут "${state.selectedRoute.name}" уже завершён.`;
+          } else {
+            qrNextHint.textContent = 'Можно выбрать маршрут справа или просто сканировать: приложение само переключит контекст.';
+          }
+
+          qrCameraPanel.classList.toggle('hidden', !state.qr.cameraOpen);
+          qrSwitchCamera.classList.toggle('hidden', !capabilities.liveCamera);
+          qrOpenCamera.disabled = state.qr.cameraStarting || state.qr.uploadBusy || state.qr.submitting;
+          qrOpenCamera.textContent = state.qr.cameraStarting
+            ? 'Запускаем камеру...'
+            : state.qr.cameraOpen
+              ? 'Остановить камеру'
+              : 'Открыть камеру';
+          qrSwitchCamera.textContent = state.qr.cameraMode === 'environment' ? 'Фронтальная камера' : 'Основная камера';
+          qrFileLabel.textContent = state.qr.uploadBusy ? 'Считываем фото...' : 'Сканировать по фото';
+          qrCameraAlert.textContent = alertText;
+          qrCameraAlert.classList.toggle('hidden', !alertText);
+        };
+
+        state.qr.render = renderScanCardState;
+        state.qr.scanner = null;
+        state.qr.cameraOpen = false;
+        state.qr.error = '';
+
+        qrOpenCamera.onclick = async () => {
+          const capabilities = getQrCapabilities();
+          if (state.qr.cameraOpen) {
+            await stopActiveScanner({ preserveStatus: true });
+            state.qr.status = 'Камера остановлена.';
+            renderScanCardState();
+            return;
+          }
+
+          if (!capabilities.liveCamera) {
+            state.qr.error = describeCameraIssue();
+            renderScanCardState();
+            return;
+          }
+
+          state.qr.cameraStarting = true;
+          state.qr.error = '';
+          state.qr.status = 'Запрашиваем доступ к камере...';
+          renderScanCardState();
+
+          try {
+            const scanner = ensureQrScanner();
+            await scanner.start({
+              facingMode: state.qr.cameraMode,
+              onDecode: async (decodedText) => {
+                state.qr.status = 'Код найден. Проверяем...';
+                renderScanCardState();
+                await handleScanResult(decodedText, { source: 'camera' });
+              },
+              onError: (error) => {
+                state.qr.error = describeCameraIssue(error);
+                renderScanCardState();
+              }
+            });
+            state.qr.cameraOpen = true;
+            state.qr.status = 'Камера включена. Наведите её на QR-код.';
+          } catch (error) {
+            state.qr.cameraOpen = false;
+            state.qr.error = describeCameraIssue(error);
+            state.qr.status = '';
+          } finally {
+            state.qr.cameraStarting = false;
+            renderScanCardState();
+          }
+        };
+
+        qrCloseCamera.onclick = async () => {
+          await stopActiveScanner({ preserveStatus: true });
+          state.qr.status = 'Камера остановлена.';
+          renderScanCardState();
+        };
+
+        qrSwitchCamera.onclick = async () => {
+          state.qr.cameraMode = state.qr.cameraMode === 'environment' ? 'user' : 'environment';
+          if (!state.qr.cameraOpen) {
+            renderScanCardState();
+            return;
+          }
+          await stopActiveScanner({ preserveStatus: true });
+          await qrOpenCamera.onclick();
+        };
+
+        qrFileInput.onchange = async (event) => {
+          const file = event.target.files?.[0];
+          event.target.value = '';
+          if (!file) return;
+
+          state.qr.uploadBusy = true;
+          state.qr.error = '';
+          state.qr.status = 'Считываем QR с изображения...';
+          renderScanCardState();
+
+          try {
+            const scanner = ensureQrScanner();
+            const decodedText = await scanner.scanFile(file);
+            if (!decodedText) throw new Error('empty-photo-result');
+            await handleScanResult(decodedText, { source: 'photo' });
+          } catch (error) {
+            state.qr.error = 'Не удалось распознать QR на фото. Попробуйте более чёткое и близкое изображение.';
+            state.qr.status = '';
+            renderScanCardState();
+            toast('Не удалось распознать QR на фото', 'error');
+          } finally {
+            state.qr.uploadBusy = false;
+            renderScanCardState();
+          }
+        };
 
         scanCard.querySelector('#qrSend').onclick = async () => {
-          const qr = scanCard.querySelector('#qrInput').value.trim();
+          const qr = qrInput.value.trim();
           if (!qr) return toast('Введите значение', 'error');
-          if (!navigator.onLine) { enqueueScan(qr); toast('Сохранено офлайн', 'success'); return; }
-          await handleScanResult(qr);
+          await handleScanResult(qr, { source: 'manual' });
+          qrInput.value = '';
         };
+
+        qrInput.addEventListener('keydown', async (event) => {
+          if (event.key !== 'Enter') return;
+          event.preventDefault();
+          scanCard.querySelector('#qrSend').click();
+        });
+
+        renderScanCardState();
+        syncQueuedScans({ silent: true }).then(() => renderScanCardState());
 
         const layout = el('<div class="grid grid-cols-1 lg:grid-cols-3 gap-5 lg:gap-6"></div>');
         layout.appendChild(left);
@@ -840,6 +1354,7 @@
                 drawMarkers();
                 updatePedestrianRoute();
               }
+              renderScanCardState();
             };
             list.appendChild(card);
           });
@@ -969,7 +1484,7 @@
         }
 
         renderRight();
-        window.__refreshHome = renderRight;
+        window.__refreshHome = () => { renderRight(); renderScanCardState(); };
 
         const mapNode = left.querySelector('#map');
         const tryMap = () => {
@@ -979,21 +1494,523 @@
         tryMap();
       }
 
+      const guideVariantRoleLabel = (role) => (role === 'primary' ? 'Рекомендуемый' : 'Альтернатива');
+      const guideMaterialLabel = (source) =>
+        ({
+          guideText: 'Текст экскурсовода',
+          guideAudio: 'Аудиогид',
+          facts: 'Опорные факты',
+          description: 'Описание точки',
+          none: 'Материалов пока нет'
+        }[source] || 'Материал');
+
+      const getSelectedGuidePack = () =>
+        state.guide.selectedPackId ? state.guide.details[state.guide.selectedPackId] || null : null;
+
+      const getSelectedGuideVariant = (pack) => {
+        if (!pack) return null;
+        return (
+          pack.variants.find((variant) => variant.routeId === state.guide.selectedVariantRouteId) ||
+          pack.variants.find((variant) => variant.routeId === pack.defaultVariantRouteId) ||
+          pack.variants[0] ||
+          null
+        );
+      };
+
+      async function loadGuidePacks(options = {}) {
+        if (state.guide.packs.length && !options.force) {
+          return state.guide.packs;
+        }
+
+        state.guide.loadingList = true;
+        try {
+          const packs = await api.get('/api/route-packs/guide');
+          state.guide.packs = Array.isArray(packs) ? packs : [];
+          state.guide.error = '';
+
+          if (state.guide.selectedPackId && !state.guide.packs.some((pack) => pack._id === state.guide.selectedPackId)) {
+            state.guide.selectedPackId = '';
+            state.guide.selectedVariantRouteId = '';
+          }
+
+          return state.guide.packs;
+        } catch (error) {
+          state.guide.error = error.msg || 'Не удалось загрузить сценарии для экскурсовода.';
+          throw error;
+        } finally {
+          state.guide.loadingList = false;
+        }
+      }
+
+      async function loadGuidePackDetail(packId, options = {}) {
+        if (!packId) return null;
+        if (state.guide.details[packId] && !options.force) {
+          return state.guide.details[packId];
+        }
+
+        state.guide.loadingDetail = true;
+        try {
+          const detail = await api.get(`/api/route-packs/guide/${packId}`);
+          state.guide.details[packId] = detail;
+          state.guide.error = '';
+          return detail;
+        } catch (error) {
+          state.guide.error = error.msg || 'Не удалось открыть briefing сценария.';
+          delete state.guide.details[packId];
+          throw error;
+        } finally {
+          state.guide.loadingDetail = false;
+        }
+      }
+
+      function renderGuideMaterialBlocks(stop) {
+        const wrap = document.createElement('div');
+        wrap.className = 'space-y-3';
+        const blocks = Array.isArray(stop.materialBlocks) ? stop.materialBlocks : [];
+
+        if (!blocks.length) {
+          wrap.appendChild(el('<div class="glass-panel rounded-card p-4 text-sm text-slate-500 font-light">Материалов для этой остановки пока нет.</div>'));
+          return wrap;
+        }
+
+        blocks.forEach((block) => {
+          if (block.type === 'guideText') {
+            wrap.appendChild(el(`
+              <div class="glass-panel rounded-card p-4 space-y-2">
+                <div class="text-[11px] uppercase tracking-[0.16em] text-slate-400 font-semibold">Текст экскурсовода</div>
+                <div class="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">${escapeHtml(block.text)}</div>
+              </div>
+            `));
+            return;
+          }
+
+          if (block.type === 'audio') {
+            wrap.appendChild(el(`
+              <div class="glass-panel rounded-card p-4 space-y-2">
+                <div class="text-[11px] uppercase tracking-[0.16em] text-slate-400 font-semibold">Аудио</div>
+                <audio controls class="w-full" src="${escapeHtml(block.url)}">Ваш браузер не поддерживает audio</audio>
+              </div>
+            `));
+            return;
+          }
+
+          if (block.type === 'facts') {
+            const facts = Array.isArray(block.items) ? block.items : [];
+            wrap.appendChild(el(`
+              <div class="glass-panel rounded-card p-4 space-y-3">
+                <div class="text-[11px] uppercase tracking-[0.16em] text-slate-400 font-semibold">Опорные факты</div>
+                <div class="space-y-3">
+                  ${facts
+                    .map(
+                      (fact) => `
+                        <div class="rounded-card bg-white/70 border border-white/60 px-3 py-3 space-y-1">
+                          <div class="text-sm font-medium text-slate-800">${escapeHtml(fact.question || 'Факт')}</div>
+                          <div class="text-sm text-slate-600 leading-relaxed">${escapeHtml(fact.answer || '')}</div>
+                        </div>
+                      `
+                    )
+                    .join('')}
+                </div>
+              </div>
+            `));
+            return;
+          }
+
+          if (block.type === 'description') {
+            wrap.appendChild(el(`
+              <div class="glass-panel rounded-card p-4 space-y-2">
+                <div class="text-[11px] uppercase tracking-[0.16em] text-slate-400 font-semibold">Описание точки</div>
+                <div class="text-sm text-slate-700 leading-relaxed">${escapeHtml(block.text)}</div>
+              </div>
+            `));
+          }
+        });
+
+        return wrap;
+      }
+
+      function renderGuideStopCard(stop, index) {
+        const card = el(`
+          <article class="glass-panel rounded-card p-5 space-y-4">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="text-[11px] uppercase tracking-[0.18em] text-slate-400 font-semibold">Остановка ${index + 1}</div>
+                <h3 class="hero-title text-lg text-slate-800 mt-2">${escapeHtml(stop.name)}</h3>
+                <div class="text-sm text-slate-500 font-light mt-1 leading-relaxed">${escapeHtml(stop.address || 'Адрес не указан')}</div>
+              </div>
+              <div class="flex flex-col items-end gap-2 shrink-0">
+                <span class="px-3 py-1.5 rounded-pill text-[11px] font-semibold ${stop.hasGuideGap ? 'bg-amber-50/95 text-amber-900 border border-amber-100' : 'bg-emerald-50/95 text-emerald-900 border border-emerald-100'}">
+                  ${stop.hasGuideGap ? 'Нужен fallback' : 'Готово для гида'}
+                </span>
+                <span class="text-[11px] font-medium text-slate-500">${escapeHtml(guideMaterialLabel(stop.materialSource))}</span>
+              </div>
+            </div>
+            <div class="text-sm text-slate-600 leading-relaxed">${escapeHtml(stop.previewText || stop.description || '')}</div>
+          </article>
+        `);
+
+        card.appendChild(renderGuideMaterialBlocks(stop));
+        return card;
+      }
+
+      function renderGuidePreviewMap(containerEl, statusEl, variant) {
+        destroyGuideMap();
+        if (!containerEl || !statusEl) return;
+
+        const stops = Array.isArray(variant?.stops) ? variant.stops : [];
+        containerEl.innerHTML = '';
+
+        if (!stops.length) {
+          statusEl.textContent = 'У этого варианта пока нет остановок для показа на карте.';
+          containerEl.appendChild(el('<div class="h-full min-h-[220px] flex items-center justify-center text-sm text-slate-500 bg-slate-100/70 rounded-card">Нет данных для карты</div>'));
+          return;
+        }
+
+        if (!cfg.twogisKey) {
+          statusEl.textContent = 'Карта недоступна: не настроен ключ 2ГИС.';
+          containerEl.appendChild(el('<div class="h-full min-h-[220px] flex items-center justify-center text-sm text-slate-500 bg-slate-100/70 rounded-card">Добавьте ключ 2ГИС, чтобы видеть маршрут на карте.</div>'));
+          return;
+        }
+
+        if (!window.mapgl) {
+          statusEl.textContent = 'Загружаем карту…';
+          containerEl.appendChild(el('<div class="h-full min-h-[220px] flex items-center justify-center text-sm text-slate-500 bg-slate-100/70 rounded-card">Карта загружается…</div>'));
+          setTimeout(() => {
+            if (document.body.contains(containerEl)) renderGuidePreviewMap(containerEl, statusEl, variant);
+          }, 250);
+          return;
+        }
+
+        statusEl.textContent = `${variant.pointCount || stops.length} остановок · ${variant.distanceKm || 0} км · ~${variant.durationMinutes || 0} мин`;
+
+        state.guide.map = new mapgl.Map(containerEl, {
+          key: cfg.twogisKey,
+          center: [variant.previewCenter?.lng || stops[0].lng, variant.previewCenter?.lat || stops[0].lat],
+          zoom: 13
+        });
+
+        state.guide.markers = stops.map((stop, index) => {
+          const html = `<div style="min-width:24px;height:24px;border-radius:9999px;background:#2563eb;color:#fff;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;box-shadow:0 1px 4px rgba(15,23,42,.22)">${index + 1}</div>`;
+          return new mapgl.HtmlMarker(state.guide.map, { coordinates: [stop.lng, stop.lat], html });
+        });
+
+        if (stops.length >= 2 && window.mapgl?.Polyline) {
+          state.guide.polyline = new mapgl.Polyline(state.guide.map, {
+            coordinates: stops.map((stop) => [stop.lng, stop.lat]),
+            color: '#2563eb',
+            width: 4
+          });
+        }
+      }
+
+      async function renderGuideWorkspace() {
+        const root = document.getElementById('app');
+        root.innerHTML = '';
+        destroyMapGl();
+        destroyGuideMap();
+
+        if (!localStorage.getItem('token')) {
+          location.hash = '#/login';
+          return;
+        }
+
+        await loadConfig();
+        await fetchUser();
+
+        if (!state.user) {
+          location.hash = '#/login';
+          return;
+        }
+
+        if (!hasGuideWorkspaceAccess()) {
+          root.appendChild(el(`
+            <section class="max-w-2xl mx-auto glass-panel-strong rounded-card p-6 md:p-8 space-y-4 mt-4">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-slate-400 font-semibold">Доступ ограничен</div>
+              <h1 class="hero-title text-2xl text-slate-800">Кабинет экскурсовода доступен не для всех ролей</h1>
+              <p class="text-sm text-slate-600 leading-relaxed">Сейчас этот раздел открыт только для ролей <strong>Guide</strong>, <strong>Curator</strong> и <strong>Administrator</strong>. Если доступ нужен для рабочей смены, попросите администратора назначить роль.</p>
+              <div class="flex flex-wrap gap-3">
+                <a href="#/" class="btn-primary !no-underline text-sm !py-3 !px-5">Вернуться на главную</a>
+                <a href="#/profile" class="btn-ghost !no-underline text-sm !py-3 !px-5">Открыть профиль</a>
+              </div>
+            </section>
+          `));
+          return;
+        }
+
+        root.appendChild(el('<section class="glass-panel-strong rounded-card p-6 md:p-8 mb-5 space-y-3"><div class="text-[11px] uppercase tracking-[0.18em] text-slate-400 font-semibold">Кабинет экскурсовода</div><div class="hero-title text-2xl md:text-3xl text-slate-800">Подберите готовый сценарий и откройте briefing маршрута</div><div class="text-sm text-slate-600 leading-relaxed">Сначала выберите pack с обещанием и практическими заметками, затем переключайтесь между вариантами маршрута прямо внутри одного live-briefing.</div></section>'));
+
+        try {
+          await loadGuidePacks();
+        } catch (error) {
+          root.appendChild(el(`
+            <section class="glass-panel rounded-card p-6 space-y-3">
+              <div class="hero-title text-xl text-slate-800">Не удалось открыть сценарии</div>
+              <div class="text-sm text-slate-600 leading-relaxed">${escapeHtml(state.guide.error || error.msg || 'Попробуйте обновить страницу чуть позже.')}</div>
+            </section>
+          `));
+          return;
+        }
+
+        if (!state.guide.packs.length) {
+          root.appendChild(el(`
+            <section class="glass-panel rounded-card p-6 space-y-3">
+              <div class="hero-title text-xl text-slate-800">Пока нет доступных сценариев</div>
+              <div class="text-sm text-slate-600 leading-relaxed">Здесь появятся только опубликованные и валидные pack-сценарии, готовые к живой экскурсии.</div>
+            </section>
+          `));
+          return;
+        }
+
+        if (state.guide.selectedPackId && !state.guide.details[state.guide.selectedPackId]) {
+          try {
+            await loadGuidePackDetail(state.guide.selectedPackId);
+          } catch (error) {
+            toast(error.msg || 'Не удалось открыть сценарий', 'error');
+            state.guide.selectedPackId = '';
+            state.guide.selectedVariantRouteId = '';
+          }
+        }
+
+        const selectedPack = getSelectedGuidePack();
+        const selectedVariant = getSelectedGuideVariant(selectedPack);
+
+        if (selectedPack && !selectedVariant) {
+          state.guide.selectedVariantRouteId = '';
+        }
+
+        const layout = el(`<div class="${selectedPack ? 'grid grid-cols-1 xl:grid-cols-[340px,minmax(0,1fr)] gap-5' : 'space-y-5'}"></div>`);
+        const listSection = el(`
+          <section class="glass-panel rounded-card p-5 space-y-4 ${selectedPack ? 'hidden xl:block xl:sticky xl:top-24 xl:self-start' : ''}">
+            <div class="flex items-start justify-between gap-3">
+              <div>
+                <div class="text-[11px] uppercase tracking-[0.16em] text-slate-400 font-semibold">Сценарии</div>
+                <h2 class="hero-title text-xl text-slate-800 mt-1">Готовые pack-маршруты</h2>
+              </div>
+              <div class="text-xs font-medium text-slate-500">${state.guide.packs.length} шт.</div>
+            </div>
+            <div class="space-y-3" id="guidePackList"></div>
+          </section>
+        `);
+
+        const listNode = listSection.querySelector('#guidePackList');
+        state.guide.packs.forEach((pack) => {
+          const isActive = pack._id === state.guide.selectedPackId;
+          const card = el(`
+            <article class="rounded-card border ${isActive ? 'border-cyan-300 bg-white/80 shadow-sm' : 'border-white/60 bg-white/55'} p-4 space-y-3 transition-colors">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="hero-title text-lg text-slate-800">${escapeHtml(pack.name)}</div>
+                  <div class="text-sm text-slate-500 font-light mt-1 leading-relaxed">${escapeHtml(pack.promise || pack.description || '')}</div>
+                </div>
+                ${pack.featured ? '<span class="px-3 py-1 rounded-pill text-[11px] font-semibold bg-cyan-50/95 text-cyan-900 border border-cyan-100">Featured</span>' : ''}
+              </div>
+              <div class="text-sm text-slate-600 leading-relaxed">${escapeHtml(pack.description || '')}</div>
+              ${pack.practicalNotesTeaser ? `<div class="text-xs text-slate-500 leading-relaxed">Практика: ${escapeHtml(pack.practicalNotesTeaser)}</div>` : ''}
+              <div class="space-y-2">
+                ${pack.variants
+                  .map(
+                    (variant) => `
+                      <div class="rounded-card bg-white/70 border border-white/60 px-3 py-2.5">
+                        <div class="text-sm font-medium text-slate-800">${escapeHtml(variant.name)}</div>
+                        <div class="text-xs text-slate-500 mt-1">${guideVariantRoleLabel(variant.role)} · ${variant.pointCount} остановок · ~${variant.durationMinutes} мин</div>
+                      </div>
+                    `
+                  )
+                  .join('')}
+              </div>
+              <button type="button" class="btn-primary w-full text-sm !py-3">${isActive ? 'Открыт сейчас' : 'Открыть briefing'}</button>
+            </article>
+          `);
+
+          card.querySelector('button').onclick = async () => {
+            try {
+              state.guide.selectedPackId = pack._id;
+              const detail = await loadGuidePackDetail(pack._id);
+              state.guide.selectedVariantRouteId = detail.defaultVariantRouteId || detail.variants?.[0]?.routeId || '';
+              await renderGuideWorkspace();
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            } catch (error) {
+              toast(error.msg || 'Не удалось открыть сценарий', 'error');
+            }
+          };
+
+          listNode.appendChild(card);
+        });
+
+        layout.appendChild(listSection);
+
+        if (!selectedPack) {
+          layout.appendChild(el(`
+            <section class="glass-panel rounded-card p-6 md:p-8 space-y-4">
+              <div class="text-[11px] uppercase tracking-[0.18em] text-slate-400 font-semibold">Briefing</div>
+              <h2 class="hero-title text-2xl text-slate-800">Выберите сценарий из списка</h2>
+              <div class="text-sm text-slate-600 leading-relaxed">После выбора откроется briefing с обещанием pack-сценария, практическими заметками, переключателем вариантов и карточками остановок в порядке экскурсии.</div>
+            </section>
+          `));
+          root.appendChild(layout);
+          return;
+        }
+
+        if (!state.guide.selectedVariantRouteId) {
+          state.guide.selectedVariantRouteId = selectedPack.defaultVariantRouteId || selectedPack.variants?.[0]?.routeId || '';
+        }
+
+        const activeVariant = getSelectedGuideVariant(selectedPack);
+        const detailSection = el(`
+          <section class="space-y-5">
+            <div class="glass-panel rounded-card p-5 md:p-6 space-y-4">
+              <button type="button" class="btn-ghost text-sm !py-2.5 !px-4 xl:hidden" id="guideBack">К списку сценариев</button>
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="text-[11px] uppercase tracking-[0.18em] text-slate-400 font-semibold">Briefing pack</div>
+                  <h2 class="hero-title text-2xl md:text-3xl text-slate-800 mt-2">${escapeHtml(selectedPack.name)}</h2>
+                  <div class="text-sm text-slate-500 font-light mt-3 leading-relaxed">${escapeHtml(selectedPack.promise || '')}</div>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  ${(selectedPack.badges || []).map((badge) => `<span class="px-3 py-1.5 rounded-pill text-[11px] font-semibold bg-white/75 border border-white/70 text-slate-700">${escapeHtml(badge)}</span>`).join('')}
+                </div>
+              </div>
+              <div class="text-sm text-slate-600 leading-relaxed">${escapeHtml(selectedPack.description || '')}</div>
+              ${selectedPack.practicalNotes ? `<div class="glass-panel rounded-card p-4"><div class="text-[11px] uppercase tracking-[0.16em] text-slate-400 font-semibold">Практические заметки</div><div class="text-sm text-slate-700 leading-relaxed mt-2">${escapeHtml(selectedPack.practicalNotes)}</div></div>` : ''}
+            </div>
+
+            <div class="glass-panel rounded-card p-5 space-y-4">
+              <div class="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <div class="text-[11px] uppercase tracking-[0.16em] text-slate-400 font-semibold">Варианты маршрута</div>
+                  <h3 class="hero-title text-xl text-slate-800 mt-1">Переключайтесь внутри одного сценария</h3>
+                </div>
+                <div class="text-xs text-slate-500">${selectedPack.variants.length} вариант(а)</div>
+              </div>
+              <div class="grid grid-cols-1 lg:grid-cols-2 gap-3" id="guideVariantList"></div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1.2fr),minmax(0,0.8fr)] gap-5">
+              <section class="glass-panel rounded-card p-5 space-y-4">
+                <div class="flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <div class="text-[11px] uppercase tracking-[0.16em] text-slate-400 font-semibold">Контекст маршрута</div>
+                    <h3 class="hero-title text-xl text-slate-800 mt-1">${escapeHtml(activeVariant?.name || '')}</h3>
+                  </div>
+                  <div class="text-xs text-slate-500">${guideVariantRoleLabel(activeVariant?.role)}</div>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                  <div class="glass-panel rounded-card p-3 text-slate-600">Остановок <div class="font-semibold text-slate-800 mt-1">${activeVariant?.pointCount || 0}</div></div>
+                  <div class="glass-panel rounded-card p-3 text-slate-600">Длина <div class="font-semibold text-slate-800 mt-1">${activeVariant?.distanceKm || 0} км</div></div>
+                  <div class="glass-panel rounded-card p-3 text-slate-600">Время <div class="font-semibold text-slate-800 mt-1">~${activeVariant?.durationMinutes || 0} мин</div></div>
+                  <div class="glass-panel rounded-card p-3 text-slate-600">Fallback <div class="font-semibold text-slate-800 mt-1">${activeVariant?.fallbackStopCount || 0}</div></div>
+                </div>
+                <div class="text-sm text-slate-600 leading-relaxed">${escapeHtml(activeVariant?.reason || '')}</div>
+                <div class="text-xs text-slate-500" id="guideMapStatus">Готовим карту…</div>
+                <div class="glass-panel rounded-card p-1 overflow-hidden">
+                  <div id="guideMap" class="h-64 rounded-card overflow-hidden"></div>
+                </div>
+              </section>
+
+              <section class="glass-panel rounded-card p-5 space-y-4">
+                <div class="text-[11px] uppercase tracking-[0.16em] text-slate-400 font-semibold">Что важно в поле</div>
+                <div class="space-y-3">
+                  <div class="rounded-card bg-white/70 border border-white/60 px-4 py-4">
+                    <div class="text-sm font-medium text-slate-800">Guide-ready остановки</div>
+                    <div class="text-sm text-slate-600 mt-1">${activeVariant?.guideReadyStopCount || 0} из ${activeVariant?.pointCount || 0} имеют dedicated guide material.</div>
+                  </div>
+                  <div class="rounded-card bg-white/70 border border-white/60 px-4 py-4">
+                    <div class="text-sm font-medium text-slate-800">Fallback остановки</div>
+                    <div class="text-sm text-slate-600 mt-1">${activeVariant?.fallbackStopCount || 0} потребуют facts или description вместо отдельного guide text.</div>
+                  </div>
+                  <div class="rounded-card bg-white/70 border border-white/60 px-4 py-4">
+                    <div class="text-sm font-medium text-slate-800">Быстрый совет</div>
+                    <div class="text-sm text-slate-600 mt-1">Проверьте fallback-карточки до выхода на маршрут: именно они чаще требуют ручной адаптации под группу.</div>
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            <section class="glass-panel rounded-card p-5 space-y-4">
+              <div class="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <div class="text-[11px] uppercase tracking-[0.16em] text-slate-400 font-semibold">Остановки</div>
+                  <h3 class="hero-title text-xl text-slate-800 mt-1">Порядок подачи материалов</h3>
+                </div>
+                <div class="text-xs text-slate-500">${activeVariant?.stops?.length || 0} карточек</div>
+              </div>
+              <div class="space-y-4" id="guideStopList"></div>
+            </section>
+          </section>
+        `);
+
+        detailSection.querySelector('#guideBack').onclick = async () => {
+          state.guide.selectedPackId = '';
+          state.guide.selectedVariantRouteId = '';
+          await renderGuideWorkspace();
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        };
+
+        const variantList = detailSection.querySelector('#guideVariantList');
+        selectedPack.variants.forEach((variant) => {
+          const isActive = variant.routeId === state.guide.selectedVariantRouteId;
+          const card = el(`
+            <button type="button" class="text-left rounded-card border ${isActive ? 'border-cyan-300 bg-cyan-50/60' : 'border-white/60 bg-white/55'} p-4 space-y-2 transition-colors">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="text-sm font-semibold text-slate-800">${escapeHtml(variant.name)}</div>
+                  <div class="text-xs text-slate-500 mt-1">${guideVariantRoleLabel(variant.role)} · ${variant.pointCount} остановок · ~${variant.durationMinutes} мин</div>
+                </div>
+                <span class="text-[11px] font-medium ${isActive ? 'text-cyan-900' : 'text-slate-500'}">${variant.distanceKm || 0} км</span>
+              </div>
+              <div class="text-sm text-slate-600 leading-relaxed">${escapeHtml(variant.reason || '')}</div>
+            </button>
+          `);
+
+          card.onclick = async () => {
+            state.guide.selectedVariantRouteId = variant.routeId;
+            await renderGuideWorkspace();
+          };
+
+          variantList.appendChild(card);
+        });
+
+        const stopList = detailSection.querySelector('#guideStopList');
+        (activeVariant?.stops || []).forEach((stop, index) => {
+          stopList.appendChild(renderGuideStopCard(stop, index));
+        });
+
+        layout.appendChild(detailSection);
+        root.appendChild(layout);
+
+        const mapNode = detailSection.querySelector('#guideMap');
+        const mapStatusNode = detailSection.querySelector('#guideMapStatus');
+        renderGuidePreviewMap(mapNode, mapStatusNode, activeVariant);
+      }
+
       function route() {
         const hash = location.hash.replace('#','') || '/';
         const token = localStorage.getItem('token');
         if ((hash === '/' || hash === '') && !token) return renderLogin();
         if (hash === '/login') return renderLogin();
         if (hash === '/register') return renderRegister();
+        if (hash === '/guide') return renderGuideWorkspace();
         if (hash === '/profile') return renderProfile();
         return renderHome();
       }
 
-      window.addEventListener('hashchange', () => { destroyMapGl(); route(); });
+      window.addEventListener('online', () => {
+        syncQueuedScans();
+        triggerQrRender();
+      });
+
+      window.addEventListener('hashchange', async () => {
+        destroyMapGl();
+        destroyGuideMap();
+        await stopActiveScanner({ preserveStatus: true });
+        state.qr.render = null;
+        route();
+      });
       (async () => {
         await loadConfig();
         setNavAuth();
         await fetchUser();
+        destroyGuideMap();
         route();
       })();
     </script>

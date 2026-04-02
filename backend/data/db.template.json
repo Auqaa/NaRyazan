@@ -70,7 +70,66 @@
           }
         }
       },
+      "role": "User",
       "createdAt": "2026-03-28T11:02:11.068292Z"
+    },
+    {
+      "_id": "guide-demo-user",
+      "name": "Guide Demo",
+      "email": "guide@local.test",
+      "phone": "",
+      "password": "guide123",
+      "balance": 0,
+      "completedRoutes": [],
+      "scannedPoints": [],
+      "favoriteRoutes": [],
+      "avatar": "",
+      "hideFromLeaderboard": true,
+      "verification": {
+        "email": {
+          "verified": true,
+          "pendingCode": null,
+          "requestedAt": null,
+          "verifiedAt": "2026-04-02T12:00:00.000Z"
+        },
+        "phone": {
+          "verified": false,
+          "pendingCode": null,
+          "requestedAt": null,
+          "verifiedAt": null
+        }
+      },
+      "role": "Guide",
+      "createdAt": "2026-04-02T12:00:00.000Z"
+    },
+    {
+      "_id": "curator-demo-user",
+      "name": "Curator Demo",
+      "email": "curator@local.test",
+      "phone": "",
+      "password": "curator123",
+      "balance": 0,
+      "completedRoutes": [],
+      "scannedPoints": [],
+      "favoriteRoutes": [],
+      "avatar": "",
+      "hideFromLeaderboard": true,
+      "verification": {
+        "email": {
+          "verified": true,
+          "pendingCode": null,
+          "requestedAt": null,
+          "verifiedAt": "2026-04-02T12:00:00.000Z"
+        },
+        "phone": {
+          "verified": false,
+          "pendingCode": null,
+          "requestedAt": null,
+          "verifiedAt": null
+        }
+      },
+      "role": "Curator",
+      "createdAt": "2026-04-02T12:00:00.000Z"
     }
   ],
   "routes": [
@@ -160,6 +219,142 @@
         "parks",
         "popular"
       ]
+    }
+  ],
+  "routePacks": [
+    {
+      "_id": "pack-first-ryazan",
+      "name": "Первый раз в Рязани",
+      "description": "Главный стартовый сценарий для первого знакомства с городом без перегруза.",
+      "promise": "За 90 минут увидеть ключевые символы Рязани и быстро поймать логику исторического центра.",
+      "badges": [
+        "90 минут",
+        "Первый визит",
+        "Главное"
+      ],
+      "practicalNotes": "Подходит для первого дня в городе и для тех, кто хочет начать с самых узнаваемых мест.",
+      "image": "/images/landmarks/ryazan-kremlin.jpg",
+      "featured": true,
+      "sortOrder": 1,
+      "status": "published",
+      "routes": [
+        {
+          "routeId": "110de614c04add7701c8477e",
+          "role": "primary",
+          "reason": "Самый понятный старт: Кремль, соборы, Есенин и музей пряника в одном связном маршруте.",
+          "order": 1
+        },
+        {
+          "routeId": "route-waterfront-parks",
+          "role": "alternative",
+          "reason": "Если хочется больше воздуха и прогулки у воды, а не плотного исторического слоя.",
+          "order": 2
+        },
+        {
+          "routeId": "route-evening-ryazan",
+          "role": "alternative",
+          "reason": "Если времени мало и нужен более короткий городской сценарий.",
+          "order": 3
+        }
+      ],
+      "createdAt": "2026-04-01T12:00:00.000Z",
+      "updatedAt": "2026-04-01T12:00:00.000Z"
+    },
+    {
+      "_id": "pack-museum-day",
+      "name": "Музеи без спешки",
+      "description": "Сценарий для тех, кто хочет пройти город через музейные адреса и спокойные остановки.",
+      "promise": "Собрать насыщенную, но не хаотичную музейную прогулку по центру Рязани.",
+      "badges": [
+        "Музеи",
+        "Спокойно",
+        "Центр"
+      ],
+      "practicalNotes": "Хорошо подходит для плохой погоды и для гостей, которым важнее истории внутри зданий, чем длинная прогулка.",
+      "image": "/images/landmarks/riamz.jpg",
+      "featured": true,
+      "sortOrder": 2,
+      "status": "published",
+      "routes": [
+        {
+          "routeId": "route-museum-ring",
+          "role": "primary",
+          "reason": "Самый музейный и содержательно плотный маршрут в текущем наборе.",
+          "order": 1
+        },
+        {
+          "routeId": "route-evening-ryazan",
+          "role": "alternative",
+          "reason": "Если нужен более короткий культурный маршрут на вечер.",
+          "order": 2
+        }
+      ],
+      "createdAt": "2026-04-01T12:00:00.000Z",
+      "updatedAt": "2026-04-01T12:00:00.000Z"
+    },
+    {
+      "_id": "pack-quiet-evening",
+      "name": "Тихий вечер в центре",
+      "description": "Неспешный сценарий для короткого окна времени, когда хочется города без перегруза.",
+      "promise": "Быстро выбрать вечернюю прогулку с красивыми видами, музеем и зелёными остановками.",
+      "badges": [
+        "Коротко",
+        "Вечер",
+        "Спокойно"
+      ],
+      "practicalNotes": "Подходит для конца дня, для пары или для гостей, которым нужен короткий маршрут вместо большого круга.",
+      "image": "/images/landmarks/ryazan-kremlin.jpg",
+      "featured": false,
+      "sortOrder": 3,
+      "status": "published",
+      "routes": [
+        {
+          "routeId": "route-evening-ryazan",
+          "role": "primary",
+          "reason": "Самый компактный вариант с сильным визуальным эффектом и без длинных переходов.",
+          "order": 1
+        },
+        {
+          "routeId": "route-waterfront-parks",
+          "role": "alternative",
+          "reason": "Если хочется больше зелени и прогулки у воды вместо музейного акцента.",
+          "order": 2
+        }
+      ],
+      "createdAt": "2026-04-01T12:00:00.000Z",
+      "updatedAt": "2026-04-01T12:00:00.000Z"
+    },
+    {
+      "_id": "pack-water-and-air",
+      "name": "У воды и с паузами",
+      "description": "Маршрутный сценарий для неспешной прогулки с зелёными остановками и более мягким темпом.",
+      "promise": "Выбрать прогулку, где важнее ритм, воздух и удобные паузы, чем плотная историческая программа.",
+      "badges": [
+        "Зелень",
+        "У воды",
+        "Без спешки"
+      ],
+      "practicalNotes": "Полезно для семейной прогулки, для хорошей погоды и для тех, кто не хочет перегружать день музеями.",
+      "image": "/images/hero/ryazan-hero.jpg",
+      "featured": false,
+      "sortOrder": 4,
+      "status": "published",
+      "routes": [
+        {
+          "routeId": "route-waterfront-parks",
+          "role": "primary",
+          "reason": "Лучший вариант для прогулки с водой, бульваром и зелёными остановками.",
+          "order": 1
+        },
+        {
+          "routeId": "110de614c04add7701c8477e",
+          "role": "alternative",
+          "reason": "Если хочется больше исторических символов, но сохранить понятный старт из центра.",
+          "order": 2
+        }
+      ],
+      "createdAt": "2026-04-01T12:00:00.000Z",
+      "updatedAt": "2026-04-01T12:00:00.000Z"
     }
   ],
   "points": [

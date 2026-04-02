@@ -3,6 +3,8 @@ import toast from 'react-hot-toast';
 import YandexMap from '../components/YandexMap';
 import QRScanner from '../components/QRScanner';
 import RouteList from '../components/RouteList';
+import RoutePackList from '../components/RoutePackList';
+import RoutePackDetail from '../components/RoutePackDetail';
 import Leaderboard from '../components/Leaderboard';
 import Shop from '../components/Shop';
 import AIAssistant from '../components/AIAssistant';
@@ -45,18 +47,43 @@ const measureDistance = (first, second) => {
   return Math.sqrt(dx * dx + dy * dy);
 };
 
+const sortPackRoutes = (pack) => (pack?.routes || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+
+const buildRoutePackViewModel = (pack, routeById) => {
+  const resolvedRoutes = sortPackRoutes(pack)
+    .map((entry) => ({
+      ...entry,
+      route: routeById.get(entry.routeId)
+    }))
+    .filter((entry) => entry.route);
+
+  const primaryRouteOption = resolvedRoutes.find((entry) => entry.role === 'primary');
+  if (!primaryRouteOption) return null;
+
+  return {
+    ...pack,
+    image: pack.image || primaryRouteOption.route.image || '',
+    primaryRoute: primaryRouteOption.route,
+    primaryRouteOption,
+    alternatives: resolvedRoutes.filter((entry) => entry.role === 'alternative').slice(0, 2)
+  };
+};
+
 const Home = () => {
   const { user, toggleFavoriteRoute } = useAuth();
   const [, setPoints] = useState([]);
   const [routes, setRoutes] = useState([]);
+  const [routePacks, setRoutePacks] = useState([]);
   const [optionalStops, setOptionalStops] = useState([]);
   const [selectedRoute, setSelectedRoute] = useState(null);
+  const [selectedPackId, setSelectedPackId] = useState('');
   const [routePreview, setRoutePreview] = useState(null);
   const [routePreviewLoading, setRoutePreviewLoading] = useState(false);
   const [userLocation, setUserLocation] = useState(null);
   const [routeOrigin, setRouteOrigin] = useState(null);
   const [aiPoint, setAiPoint] = useState(null);
   const [loadingRoutes, setLoadingRoutes] = useState(true);
+  const [loadingRoutePacks, setLoadingRoutePacks] = useState(true);
   const [routeQuery, setRouteQuery] = useState('');
   const [activeTheme, setActiveTheme] = useState('all');
   const [onlySaved, setOnlySaved] = useState(false);
@@ -84,11 +111,13 @@ const Home = () => {
 
     const loadData = async () => {
       setLoadingRoutes(true);
+      setLoadingRoutePacks(true);
 
       if (navigator.onLine) {
-        const [pointsResult, routesResult, configResult, stopsResult] = await Promise.allSettled([
+        const [pointsResult, routesResult, packsResult, configResult, stopsResult] = await Promise.allSettled([
           api.get('/points'),
           api.get('/routes'),
+          api.get('/route-packs'),
           api.get('/config'),
           api.get('/stops')
         ]);
@@ -112,6 +141,13 @@ const Home = () => {
           setSelectedRoute((current) => current || offlineRoutes[0] || null);
         }
 
+        if (packsResult.status === 'fulfilled') {
+          setRoutePacks(packsResult.value.data || []);
+        } else {
+          console.error('Failed to load route packs', packsResult.reason);
+          setRoutePacks([]);
+        }
+
         if (configResult.status === 'fulfilled') {
           setMapConfig(configResult.value.data);
         }
@@ -124,10 +160,12 @@ const Home = () => {
         if (!alive) return;
         setPoints(offlinePoints);
         setRoutes(offlineRoutes);
+        setRoutePacks([]);
         setSelectedRoute((current) => current || offlineRoutes[0] || null);
       }
 
       setLoadingRoutes(false);
+      setLoadingRoutePacks(false);
     };
 
     loadData();
@@ -185,6 +223,24 @@ const Home = () => {
     () => new Set((user?.favoriteRoutes || user?.savedRoutes || []).map((route) => route._id)),
     [user]
   );
+
+  const routeById = useMemo(() => new Map(routes.map((route) => [route._id, route])), [routes]);
+
+  const publicRoutePacks = useMemo(
+    () => routePacks.map((pack) => buildRoutePackViewModel(pack, routeById)).filter(Boolean),
+    [routeById, routePacks]
+  );
+
+  const selectedRoutePack = useMemo(
+    () => publicRoutePacks.find((pack) => pack._id === selectedPackId) || null,
+    [publicRoutePacks, selectedPackId]
+  );
+
+  useEffect(() => {
+    if (selectedPackId && !publicRoutePacks.some((pack) => pack._id === selectedPackId)) {
+      setSelectedPackId('');
+    }
+  }, [publicRoutePacks, selectedPackId]);
 
   const filteredRoutes = useMemo(() => {
     const query = deferredRouteQuery.trim().toLowerCase();
@@ -363,6 +419,15 @@ const Home = () => {
       setActiveTheme(pickerTheme);
     }
     toast.success(`Подобрали маршрут: ${match.name}`);
+  };
+
+  const handleSelectRoutePack = (pack) => {
+    setSelectedPackId(pack._id);
+  };
+
+  const handleChoosePackRoute = (route) => {
+    setSelectedRoute(route);
+    toast.success(`Выбран маршрут из подборки: ${route.name}`);
   };
 
   const handleToggleFavorite = async (routeId) => {
@@ -717,6 +782,46 @@ const Home = () => {
               >
                 Фильтры
               </button>
+            </div>
+
+            <div className="mb-4 rounded-[1.8rem] border border-slate-200 bg-slate-50 p-4" data-testid="route-packs-section">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">Под ваш сценарий</p>
+                  <h3 className="mt-1 text-lg font-bold text-slate-900">Сценарии прогулки</h3>
+                </div>
+                {!loadingRoutePacks && publicRoutePacks.length > 0 && (
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600">
+                    {publicRoutePacks.length}
+                  </span>
+                )}
+              </div>
+
+              {loadingRoutePacks ? (
+                <p className="mt-3 text-sm text-slate-500">Собираем готовые сценарии прогулки...</p>
+              ) : publicRoutePacks.length ? (
+                <>
+                  <div className="mt-4">
+                    <RoutePackList
+                      packs={publicRoutePacks}
+                      selectedPackId={selectedPackId}
+                      onSelectPack={handleSelectRoutePack}
+                    />
+                  </div>
+
+                  {selectedRoutePack && (
+                    <RoutePackDetail
+                      pack={selectedRoutePack}
+                      selectedRouteId={selectedRoute?._id}
+                      onChooseRoute={handleChoosePackRoute}
+                    />
+                  )}
+                </>
+              ) : (
+                <p className="mt-3 text-sm leading-6 text-slate-500">
+                  Пока нет опубликованных сценариев, но каталог маршрутов ниже уже доступен для выбора.
+                </p>
+              )}
             </div>
 
             <div className="mb-3 flex flex-wrap gap-2">

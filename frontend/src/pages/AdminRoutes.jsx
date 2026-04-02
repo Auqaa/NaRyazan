@@ -1,8 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import toast from 'react-hot-toast';
+import { useSearchParams } from 'react-router-dom';
 import YandexMap from '../components/YandexMap';
+import { useAdminWorkspace } from '../contexts/AdminWorkspaceContext';
 import api from '../utils/api';
+import { buildAdminWorkspaceHref, saveAdminWorkspaceHistoryEntry } from '../utils/adminWorkspaceHistory';
+import { readFileAsDataUrl } from '../utils/readFileAsDataUrl';
 
 const EMPTY_ROUTE_FORM = {
   _id: '',
@@ -53,15 +57,8 @@ const normalizeRouteToForm = (route) => ({
     }))
 });
 
-const readFileAsDataUrl = (file) =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-
 const AdminRoutes = () => {
+  const { setMetadata, resetMetadata } = useAdminWorkspace();
   const [routes, setRoutes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -69,6 +66,10 @@ const AdminRoutes = () => {
   const [geocodingId, setGeocodingId] = useState('');
   const [mapKey, setMapKey] = useState('');
   const [routeGeometry, setRouteGeometry] = useState([]);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const handledIntentRef = useRef('');
+  const routeIdFromQuery = searchParams.get('routeId');
+  const wantsNewRoute = searchParams.get('new') === '1';
 
   useEffect(() => {
     let alive = true;
@@ -93,6 +94,8 @@ const AdminRoutes = () => {
     };
   }, []);
 
+  useEffect(() => resetMetadata, [resetMetadata]);
+
   const orderedWaypoints = useMemo(
     () => routeForm.waypoints.slice().sort((left, right) => Number(left.order) - Number(right.order)),
     [routeForm.waypoints]
@@ -116,6 +119,25 @@ const AdminRoutes = () => {
     if (!previewPoints.length) return DEFAULT_CENTER;
     return { lat: previewPoints[0].lat, lng: previewPoints[0].lng };
   }, [previewPoints]);
+
+  useEffect(() => {
+    setMetadata({
+      eyebrow: 'Маршруты',
+      title: routeForm._id ? routeForm.name || 'Маршрут без названия' : 'Новый маршрут',
+      description: routeForm._id
+        ? 'Редактирование маршрута, точек и QR-кодов внутри общего рабочего пространства.'
+        : 'Создайте маршрут с точками, картой и QR-кодами без выхода из admin workspace.',
+      stats: [
+        { label: 'Маршрутов', value: routes.length },
+        { label: 'Точек в форме', value: routeForm.waypoints.length },
+        { label: 'Карта', value: previewPoints.length > 1 ? 'Маршрут виден' : 'Нужно 2+ точки' }
+      ],
+      actions: [
+        { label: 'Новый маршрут', to: buildAdminWorkspaceHref({ type: 'route', isNew: true }) },
+        { label: 'К подборкам', to: '/admin/packs' }
+      ]
+    });
+  }, [setMetadata, routeForm._id, routeForm.name, routeForm.waypoints.length, routes.length, previewPoints.length]);
 
   useEffect(() => {
     let alive = true;
@@ -145,6 +167,33 @@ const AdminRoutes = () => {
       alive = false;
     };
   }, [previewPoints]);
+
+  useEffect(() => {
+    if (loading) return;
+
+    const nextIntent = routeIdFromQuery ? `route:${routeIdFromQuery}` : wantsNewRoute ? 'new' : '';
+    if (!nextIntent) {
+      handledIntentRef.current = '';
+      return;
+    }
+
+    if (handledIntentRef.current === nextIntent) {
+      return;
+    }
+
+    if (routeIdFromQuery) {
+      const selectedRoute = routes.find((route) => route._id === routeIdFromQuery);
+      if (selectedRoute) {
+        setRouteForm(normalizeRouteToForm(selectedRoute));
+      }
+      handledIntentRef.current = nextIntent;
+      return;
+    }
+
+    setRouteForm(EMPTY_ROUTE_FORM);
+    setRouteGeometry([]);
+    handledIntentRef.current = nextIntent;
+  }, [loading, routeIdFromQuery, wantsNewRoute, routes]);
 
   const refreshRoutes = async (selectedId = '') => {
     const response = await api.get('/routes');
@@ -274,12 +323,22 @@ const AdminRoutes = () => {
 
   const handleEditRoute = (route) => {
     setRouteForm(normalizeRouteToForm(route));
+    handledIntentRef.current = `route:${route._id}`;
+    setSearchParams({ routeId: route._id });
+    saveAdminWorkspaceHistoryEntry({
+      type: 'route',
+      entityId: route._id,
+      label: route.name,
+      href: buildAdminWorkspaceHref({ type: 'route', entityId: route._id })
+    });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleReset = () => {
     setRouteForm(EMPTY_ROUTE_FORM);
     setRouteGeometry([]);
+    handledIntentRef.current = 'new';
+    setSearchParams({ new: '1' });
   };
 
   const handleDeleteRoute = async (routeId, routeName) => {
@@ -330,6 +389,14 @@ const AdminRoutes = () => {
         : await api.post('/routes/admin', payload);
 
       toast.success(routeForm._id ? 'Маршрут обновлён' : 'Маршрут создан');
+      handledIntentRef.current = `route:${response.data._id}`;
+      setSearchParams({ routeId: response.data._id });
+      saveAdminWorkspaceHistoryEntry({
+        type: 'route',
+        entityId: response.data._id,
+        label: payload.name,
+        href: buildAdminWorkspaceHref({ type: 'route', entityId: response.data._id })
+      });
       await refreshRoutes(response.data._id);
     } catch (error) {
       console.error(error);
@@ -340,38 +407,11 @@ const AdminRoutes = () => {
   };
 
   if (loading) {
-    return <div className="mx-auto max-w-7xl p-6 text-sm text-slate-600">Загрузка админ-панели...</div>;
+    return <div className="rounded-[2rem] border border-white/70 bg-white/90 p-6 text-sm text-slate-600 shadow-sm">Загрузка редактора маршрутов...</div>;
   }
 
   return (
-    <div className="mx-auto max-w-7xl p-4 sm:p-6">
-      <section className="overflow-hidden rounded-[2rem] border border-white/70 bg-slate-950 text-white shadow-xl">
-        <div className="grid gap-6 px-5 py-6 sm:px-6 lg:grid-cols-[1.1fr_0.9fr] lg:px-8">
-          <div className="max-w-2xl">
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-sky-200/80">Админ-панель</p>
-            <h1 className="mt-3 text-3xl font-bold tracking-tight sm:text-4xl">Маршруты, точки и QR-коды</h1>
-            <p className="mt-3 text-sm leading-7 text-slate-300">
-              Здесь можно собрать маршрут, поменять изображения, подготовить QR-коды для точек и сразу проверить схему на карте.
-            </p>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
-            <div className="rounded-[1.6rem] bg-white/10 p-4 backdrop-blur">
-              <div className="text-xs uppercase tracking-[0.22em] text-slate-300">Маршрутов</div>
-              <div className="mt-2 text-3xl font-bold">{routes.length}</div>
-            </div>
-            <div className="rounded-[1.6rem] bg-white/10 p-4 backdrop-blur">
-              <div className="text-xs uppercase tracking-[0.22em] text-slate-300">Точек в форме</div>
-              <div className="mt-2 text-3xl font-bold">{routeForm.waypoints.length}</div>
-            </div>
-            <div className="rounded-[1.6rem] bg-white/10 p-4 backdrop-blur">
-              <div className="text-xs uppercase tracking-[0.22em] text-slate-300">Карта</div>
-              <div className="mt-2 text-lg font-semibold">{previewPoints.length > 1 ? 'Маршрут виден' : 'Нужно 2+ точки'}</div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <div className="mt-6 grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
+    <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
         <div className="space-y-6">
           <section className="rounded-[2rem] border border-white/70 bg-white/95 p-5 shadow-xl sm:p-6">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -686,7 +726,6 @@ const AdminRoutes = () => {
             </div>
           </section>
         </div>
-      </div>
     </div>
   );
 };

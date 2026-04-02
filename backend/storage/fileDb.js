@@ -1,10 +1,14 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { normalizeUserRole } = require('../services/roles');
 
-const DB_DIR = path.join(__dirname, '..', 'data');
-const DB_PATH = path.join(DB_DIR, 'db.json');
-const TEMPLATE_PATH = path.join(DB_DIR, 'db.template.json');
+const DEFAULT_DB_DIR = path.join(__dirname, '..', 'data');
+const DB_PATH = process.env.FILE_DB_PATH ? path.resolve(process.env.FILE_DB_PATH) : path.join(DEFAULT_DB_DIR, 'db.json');
+const DB_DIR = path.dirname(DB_PATH);
+const TEMPLATE_PATH = process.env.FILE_DB_TEMPLATE_PATH
+  ? path.resolve(process.env.FILE_DB_TEMPLATE_PATH)
+  : path.join(DB_DIR, 'db.template.json');
 
 const makeId = () => crypto.randomUUID();
 const DEFAULT_ADMIN_EMAIL = 'admin@local.test';
@@ -125,6 +129,7 @@ const seedData = () => {
   return {
     users: [],
     routes,
+    routePacks: [],
     points: pointsWithRouteId,
     rewards,
     scans: []
@@ -136,6 +141,7 @@ let dbCache = null;
 const normalizeDbShape = (db) => {
   db.users = Array.isArray(db.users) ? db.users : [];
   db.routes = Array.isArray(db.routes) ? db.routes : [];
+  db.routePacks = Array.isArray(db.routePacks) ? db.routePacks : [];
   db.points = Array.isArray(db.points) ? db.points : [];
   db.rewards = Array.isArray(db.rewards) ? db.rewards : [];
   db.optionalStops = Array.isArray(db.optionalStops) ? db.optionalStops : [];
@@ -146,11 +152,11 @@ const normalizeDbShape = (db) => {
     avatar: '',
     hideFromLeaderboard: false,
     payments: [],
-    role: 'User',
-    ...user
+    ...user,
+    role: normalizeUserRole(user.role)
   }));
 
-  if (!db.users.some((user) => user.role === 'Administrator')) {
+  if (!db.users.some((user) => normalizeUserRole(user.role) === 'Administrator')) {
     db.users.push({
       _id: makeId(),
       name: 'Администратор',
@@ -164,7 +170,7 @@ const normalizeDbShape = (db) => {
       avatar: '',
       hideFromLeaderboard: true,
       payments: [],
-      role: 'Administrator',
+      role: normalizeUserRole('Administrator'),
       verification: {
         email: {
           verified: true,
@@ -190,11 +196,38 @@ const normalizeDbShape = (db) => {
     ...route
   }));
 
+  db.routePacks = db.routePacks.map((pack) => ({
+    description: '',
+    promise: '',
+    badges: [],
+    practicalNotes: '',
+    image: '',
+    featured: false,
+    sortOrder: 0,
+    status: 'draft',
+    routes: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...pack,
+    badges: Array.isArray(pack.badges) ? pack.badges.filter(Boolean).map((badge) => String(badge)) : [],
+    routes: Array.isArray(pack.routes)
+      ? pack.routes.map((entry, index) => ({
+          routeId: String(entry.routeId || '').trim(),
+          role: entry.role === 'alternative' ? 'alternative' : 'primary',
+          reason: String(entry.reason || '').trim(),
+          order: Number.isFinite(Number(entry.order)) ? Number(entry.order) : index + 1
+        }))
+      : []
+  }));
+
   db.points = db.points.map((point) => ({
     waypointType: point.waypointType || 'regular',
     address: point.address || '',
     qrCodeImage: point.qrCodeImage || '',
     image: point.image || '',
+    facts: Array.isArray(point.facts) ? point.facts : [],
+    guideText: point.guideText || '',
+    guideAudioUrl: point.guideAudioUrl || '',
     ...point
   }));
 
@@ -242,9 +275,14 @@ const withDb = async (fn) => {
   return res;
 };
 
+const resetDbCache = () => {
+  dbCache = null;
+};
+
 module.exports = {
   getDb,
   withDb,
-  DB_PATH
+  DB_PATH,
+  resetDbCache
 };
 

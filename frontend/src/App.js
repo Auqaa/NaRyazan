@@ -4,9 +4,12 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import Home from './pages/Home';
 import Login from './pages/Login';
 import Register from './pages/Register';
+import AdminHome from './pages/AdminHome';
 import AdminRoutes from './pages/AdminRoutes';
+import AdminRoutePacks from './pages/AdminRoutePacks';
 import Profile from './components/Profile';
 import AppErrorBoundary from './components/AppErrorBoundary';
+import AdminWorkspaceShell from './components/AdminWorkspaceShell';
 import { Toaster } from 'react-hot-toast';
 
 const PrivateRoute = ({ children }) => {
@@ -44,13 +47,17 @@ function AppRoutes() {
         }
       />
       <Route
-        path="/admin/routes"
+        path="/admin"
         element={
           <AdminRoute>
-            <AdminRoutes />
+            <AdminWorkspaceShell />
           </AdminRoute>
         }
-      />
+      >
+        <Route index element={<AdminHome />} />
+        <Route path="routes" element={<AdminRoutes />} />
+        <Route path="packs" element={<AdminRoutePacks />} />
+      </Route>
       <Route path="/login" element={!user ? <Login /> : <Navigate to="/" replace />} />
       <Route path="/register" element={!user ? <Register /> : <Navigate to="/" replace />} />
     </Routes>
@@ -76,7 +83,7 @@ function AppShell() {
                 </Link>
               )}
               {user && isAdmin && (
-                <Link to="/admin/routes" className="hover:underline underline-offset-4">
+                <Link to="/admin" className="hover:underline underline-offset-4">
                   Админка
                 </Link>
               )}

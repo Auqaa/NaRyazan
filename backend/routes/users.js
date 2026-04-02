@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
+const { body, validationResult } = require('express-validator');
 const auth = require('../middleware/auth');
+const { VALID_ROLES, normalizeUserRole } = require('../services/roles');
 const { getDb, withDb } = require('../storage/fileDb');
 
 const mapRoutePreview = (route) =>
@@ -13,6 +15,23 @@ const mapRoutePreview = (route) =>
         themes: route.themes || []
       }
     : null;
+
+const sanitizeUser = (user) => {
+  const { password, ...safeUser } = user;
+  return {
+    ...safeUser,
+    role: normalizeUserRole(safeUser.role)
+  };
+};
+
+const buildVerification = (user) => ({
+  email: {
+    verified: user.verification?.email?.verified ?? Boolean(user.email)
+  },
+  phone: {
+    verified: user.verification?.phone?.verified ?? Boolean(user.phone)
+  }
+});
 
 router.get('/me', auth, async (req, res) => {
   try {
@@ -34,25 +53,15 @@ router.get('/me', auth, async (req, res) => {
       .map((routeId) => mapRoutePreview(db.routes.find((route) => route._id === routeId)))
       .filter(Boolean);
 
-    // Не отдаём хэш пароля.
-    const { password, ...safeUser } = user;
-    const verification = {
-      email: {
-        verified: safeUser.verification?.email?.verified ?? Boolean(safeUser.email)
-      },
-      phone: {
-        verified: safeUser.verification?.phone?.verified ?? Boolean(safeUser.phone)
-      }
-    };
+    const safeUser = sanitizeUser(user);
 
     res.json({
       ...safeUser,
-      role: safeUser.role || 'User',
       favoriteRoutes,
       savedRoutes: favoriteRoutes,
       completedRoutes,
       scannedPoints,
-      verification
+      verification: buildVerification(safeUser)
     });
   } catch (err) {
     console.error(err);
@@ -108,12 +117,13 @@ router.patch('/me', auth, async (req, res) => {
     const favoriteRoutes = (updatedUser.favoriteRoutes || [])
       .map((routeId) => mapRoutePreview(updatedDb.routes.find((route) => route._id === routeId)))
       .filter(Boolean);
+    const safeUpdatedUser = sanitizeUser(updatedUser);
 
     res.json({
       success: true,
       user: {
-        ...updatedUser,
-        completedRoutes: (updatedUser.completedRoutes || [])
+        ...safeUpdatedUser,
+        completedRoutes: (safeUpdatedUser.completedRoutes || [])
           .map((routeId) => mapRoutePreview(updatedDb.routes.find((route) => route._id === routeId)))
           .filter(Boolean),
         favoriteRoutes,
@@ -125,6 +135,53 @@ router.patch('/me', auth, async (req, res) => {
     res.status(500).send('Server error');
   }
 });
+
+router.patch(
+  '/:id/role',
+  auth,
+  auth.requireAdmin,
+  [body('role').isIn(VALID_ROLES)],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    try {
+      const db = await getDb();
+      const targetUser = db.users.find((item) => item._id === req.params.id);
+
+      if (!targetUser) {
+        return res.status(404).json({ msg: 'User not found' });
+      }
+
+      const nextRole = normalizeUserRole(req.body.role);
+      const currentRole = normalizeUserRole(targetUser.role);
+      const administratorCount = db.users.filter((user) => normalizeUserRole(user.role) === 'Administrator').length;
+
+      if (currentRole === 'Administrator' && nextRole !== 'Administrator' && administratorCount <= 1) {
+        return res.status(400).json({ msg: 'At least one administrator must remain' });
+      }
+
+      await withDb(async (innerDb) => {
+        const innerUser = innerDb.users.find((item) => item._id === req.params.id);
+        if (!innerUser) return;
+        innerUser.role = nextRole;
+      });
+
+      const updatedDb = await getDb();
+      const updatedUser = updatedDb.users.find((item) => item._id === req.params.id);
+
+      res.json({
+        success: true,
+        user: sanitizeUser(updatedUser)
+      });
+    } catch (err) {
+      console.error(err);
+      res.status(500).send('Server error');
+    }
+  }
+);
 
 router.post('/favorites/:routeId', auth, async (req, res) => {
   try {

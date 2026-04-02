@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const auth = require('../middleware/auth');
+const { normalizeQrValueForMatch } = require('../services/qrCodes');
 const { getDb, withDb } = require('../storage/fileDb');
 
 const router = express.Router();
@@ -139,14 +140,15 @@ const ensureUniqueQrValues = (db, routeId, points) => {
   const nextValues = new Set();
 
   for (const point of points) {
-    if (nextValues.has(point.qrCodeValue)) {
+    const normalized = normalizeQrValueForMatch(point.qrCodeValue);
+    if (nextValues.has(normalized)) {
       return `Duplicate qrCodeValue inside route: ${point.qrCodeValue}`;
     }
-    nextValues.add(point.qrCodeValue);
+    nextValues.add(normalized);
   }
 
   const conflict = db.points.find(
-    (point) => point.routeId !== routeId && nextValues.has(point.qrCodeValue)
+    (point) => point.routeId !== routeId && nextValues.has(normalizeQrValueForMatch(point.qrCodeValue))
   );
 
   return conflict ? `QR value already used by another waypoint: ${conflict.qrCodeValue}` : null;
@@ -225,7 +227,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-router.post('/admin', auth, auth.requireAdmin, validateRoutePayload, async (req, res) => {
+router.post('/admin', auth, auth.requireEditorialRole, validateRoutePayload, async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ errors: errors.array() });
@@ -265,7 +267,7 @@ router.post('/admin', auth, auth.requireAdmin, validateRoutePayload, async (req,
   }
 });
 
-router.put('/admin/:id', auth, auth.requireAdmin, validateRoutePayload, async (req, res) => {
+router.put('/admin/:id', auth, auth.requireEditorialRole, validateRoutePayload, async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ errors: errors.array() });
@@ -326,7 +328,7 @@ router.put('/admin/:id', auth, auth.requireAdmin, validateRoutePayload, async (r
   }
 });
 
-router.delete('/admin/:id', auth, auth.requireAdmin, async (req, res) => {
+router.delete('/admin/:id', auth, auth.requireEditorialRole, async (req, res) => {
   try {
     const db = await getDb();
     const existingRoute = db.routes.find((item) => item._id === req.params.id);
