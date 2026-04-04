@@ -58,6 +58,7 @@ describe('QRScanner', () => {
   let root;
   let setUser;
   let onScanSuccess;
+  let consoleErrorSpy;
 
   beforeAll(() => {
     global.IS_REACT_ACT_ENVIRONMENT = true;
@@ -70,6 +71,7 @@ describe('QRScanner', () => {
 
     setUser = jest.fn();
     onScanSuccess = jest.fn();
+    consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
     useAuth.mockReturnValue({ setUser });
     getScanQueue.mockResolvedValue([]);
@@ -97,6 +99,7 @@ describe('QRScanner', () => {
       root.unmount();
     });
     container.remove();
+    consoleErrorSpy.mockRestore();
     jest.clearAllMocks();
   });
 
