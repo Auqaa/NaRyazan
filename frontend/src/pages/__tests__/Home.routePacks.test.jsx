@@ -26,25 +26,44 @@ jest.mock('../../utils/offlineStorage', () => ({
   saveRoutesOffline: jest.fn()
 }));
 
-jest.mock('../../components/YandexMap', () => () => <div data-testid="map-placeholder" />);
-jest.mock('../../components/QRScanner', () => () => <div data-testid="qr-scanner-placeholder" />);
-jest.mock('../../components/Leaderboard', () => () => <div data-testid="leaderboard-placeholder" />);
-jest.mock('../../components/Shop', () => () => <div data-testid="shop-placeholder" />);
-jest.mock('../../components/AIAssistant', () => () => <div data-testid="ai-assistant-placeholder" />);
-jest.mock('../../components/ShareButton', () => ({ routeName }) => <div data-testid={`share-route-name-${routeName}`} />);
-jest.mock('../../components/RouteList', () => ({ routes = [], selectedRouteId, onSelectRoute }) => (
+jest.mock('../../components/RoutePackList', () => ({ packs = [], onSelectPack }) => (
+  <div data-testid="route-pack-list">
+    {packs.map((pack) => (
+      <button key={pack._id} type="button" data-testid={`route-pack-card-${pack._id}`} onClick={() => onSelectPack?.(pack)}>
+        {pack.name}
+      </button>
+    ))}
+  </div>
+));
+
+jest.mock('../../components/RouteList', () => ({ routes = [], onSelectRoute }) => (
   <div data-testid="route-list">
     {routes.map((route) => (
-      <button
-        key={route._id}
-        type="button"
-        data-testid={`route-button-${route._id}`}
-        data-selected={route._id === selectedRouteId ? 'true' : 'false'}
-        onClick={() => onSelectRoute?.(route)}
-      >
+      <button key={route._id} type="button" data-testid={`route-button-${route._id}`} onClick={() => onSelectRoute?.(route)}>
         {route.name}
       </button>
     ))}
+  </div>
+));
+
+jest.mock('../../components/RoutePlanSheet', () => ({ route, onBack, onStartRoute }) => (
+  <div data-testid="route-plan-sheet">
+    <div>{route.name}</div>
+    <button type="button" data-testid="route-plan-back" onClick={onBack}>
+      back
+    </button>
+    <button type="button" data-testid="route-plan-start" onClick={onStartRoute}>
+      start
+    </button>
+  </div>
+));
+
+jest.mock('../../components/ActiveRoutePanel', () => ({ route, onBackToPlan }) => (
+  <div data-testid="active-route-panel">
+    <div>{route.name}</div>
+    <button type="button" data-testid="active-route-back" onClick={onBackToPlan}>
+      plan
+    </button>
   </div>
 ));
 
@@ -56,7 +75,6 @@ const ROUTES = [
     themes: ['history'],
     points: [],
     pointCount: 0,
-    totalReward: 20,
     distanceKm: 2.4,
     durationMinutes: 45
   },
@@ -67,7 +85,6 @@ const ROUTES = [
     themes: ['water'],
     points: [],
     pointCount: 0,
-    totalReward: 30,
     distanceKm: 3.1,
     durationMinutes: 55
   }
@@ -79,10 +96,7 @@ const ROUTE_PACKS = [
     name: 'First Day',
     description: 'A curated first walk',
     promise: 'See the essentials without rushing',
-    practicalNotes: 'Best for a calm afternoon',
-    badges: ['90 min'],
     featured: true,
-    sortOrder: 0,
     routes: [
       { routeId: 'route-1', role: 'primary', reason: 'Best default', order: 1 },
       { routeId: 'route-2', role: 'alternative', reason: 'Quieter option', order: 2 }
@@ -96,7 +110,7 @@ const flushPromises = async () => {
   });
 };
 
-describe('Home route packs', () => {
+describe('Home mobile route flow', () => {
   let container;
   let root;
   let consoleErrorSpy;
@@ -130,7 +144,7 @@ describe('Home route packs', () => {
     getRoutesOffline.mockResolvedValue([]);
     savePointsOffline.mockResolvedValue();
     saveRoutesOffline.mockResolvedValue();
-    api.post.mockReset();
+    api.post.mockResolvedValue({ data: { geometry: [], distanceMeters: 0, durationSeconds: 0 } });
   });
 
   afterEach(() => {
@@ -151,49 +165,68 @@ describe('Home route packs', () => {
     await flushPromises();
   };
 
-  it('switches the selected route when a pack route is chosen', async () => {
+  it('starts from route packs and then opens routes inside the selected pack', async () => {
     api.get.mockImplementation((url) => {
       if (url === '/points') return Promise.resolve({ data: [] });
       if (url === '/routes') return Promise.resolve({ data: ROUTES });
       if (url === '/route-packs') return Promise.resolve({ data: ROUTE_PACKS });
       if (url === '/config') return Promise.resolve({ data: { mapKey: '', center: { lat: 54.6, lng: 39.7 } } });
-      if (url === '/stops') return Promise.resolve({ data: [] });
       return Promise.reject(new Error(`Unexpected GET ${url}`));
     });
 
     await renderHome();
 
-    const packCard = container.querySelector('[data-testid="route-pack-card-pack-1"]');
-    expect(packCard).not.toBeNull();
+    expect(container.querySelector('[data-testid="route-pack-list"]')).not.toBeNull();
 
     await act(async () => {
-      Simulate.click(packCard);
+      Simulate.click(container.querySelector('[data-testid="route-pack-card-pack-1"]'));
     });
 
-    const chooseAlternativeButton = container.querySelector('[data-testid="route-pack-option-route-2"] button');
-    expect(chooseAlternativeButton).not.toBeNull();
-
-    await act(async () => {
-      Simulate.click(chooseAlternativeButton);
-    });
-
-    expect(container.querySelector('[data-testid="share-route-name-River Walk"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="route-list"]')).not.toBeNull();
+    expect(container.textContent).toContain('First Day');
   });
 
-  it('keeps routes available when route packs fail to load', async () => {
+  it('opens route plan first and only then switches to active route', async () => {
+    api.get.mockImplementation((url) => {
+      if (url === '/points') return Promise.resolve({ data: [] });
+      if (url === '/routes') return Promise.resolve({ data: ROUTES });
+      if (url === '/route-packs') return Promise.resolve({ data: ROUTE_PACKS });
+      if (url === '/config') return Promise.resolve({ data: { mapKey: '', center: { lat: 54.6, lng: 39.7 } } });
+      return Promise.reject(new Error(`Unexpected GET ${url}`));
+    });
+
+    await renderHome();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[data-testid="route-pack-card-pack-1"]'));
+    });
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[data-testid="route-button-route-2"]'));
+    });
+
+    expect(container.querySelector('[data-testid="route-plan-sheet"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="active-route-panel"]')).toBeNull();
+
+    await act(async () => {
+      Simulate.click(container.querySelector('[data-testid="route-plan-start"]'));
+    });
+
+    expect(container.querySelector('[data-testid="active-route-panel"]')).not.toBeNull();
+  });
+
+  it('falls back to direct route list when route packs are unavailable', async () => {
     api.get.mockImplementation((url) => {
       if (url === '/points') return Promise.resolve({ data: [] });
       if (url === '/routes') return Promise.resolve({ data: ROUTES });
       if (url === '/route-packs') return Promise.reject(new Error('route packs unavailable'));
       if (url === '/config') return Promise.resolve({ data: { mapKey: '', center: { lat: 54.6, lng: 39.7 } } });
-      if (url === '/stops') return Promise.resolve({ data: [] });
       return Promise.reject(new Error(`Unexpected GET ${url}`));
     });
 
     await renderHome();
 
     expect(container.querySelector('[data-testid="route-list"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="route-packs-section"]')).not.toBeNull();
-    expect(container.textContent).toContain('Пока нет опубликованных сценариев');
+    expect(container.textContent).toContain('Все маршруты');
   });
 });
