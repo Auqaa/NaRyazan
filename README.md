@@ -7,16 +7,6 @@ PWA-приложение для маршрутов по Рязани, QR-кве�
 - `backend/` — Node.js API с локальной JSON-БД
 - `frontend/` — React + Tailwind
 
-## Где менять ключ 2GIS
-
-Главное место: корневой файл `.env`.
-
-Минимально достаточно этой строки:
-
-```env
-TWOGIS_KEY=ВАШ_КЛЮЧ_2GIS
-```
-
 ## Админ-вход
 
 - email: `admin@local.test`
